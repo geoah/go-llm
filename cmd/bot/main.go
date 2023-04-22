@@ -1,31 +1,116 @@
 package main
 
 import (
-	"flag"
+	"context"
 	"fmt"
 	"os"
 	"os/signal"
+	"regexp"
+	"strings"
 	"syscall"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/fatih/color"
+	"github.com/sashabaranov/go-openai"
+
+	"github.com/geoah/go-llm"
 )
 
-// Variables used for command line parameters
 var (
-	Token string
-)
+	rules = `
+# Rules
+1. No swearing is allowed.
+2. No mention of any type of food is allowed.
+3. No mention of politics is allowed.
+`
+	setup = `
+Instructions:
 
-func init() {
-	flag.StringVar(&Token, "t", "", "Bot Token")
-	flag.Parse()
-}
+You are responsible for maintaining the community guidelines of a
+discord server according to rules they have set.
+
+The rules will be provided between the lines "RULES START" and "RULES END".
+The message you are evaluating is provided after the word "MESSAGE:".
+
+If any message breaks the rules, respond with the number of the
+rule that was broken. If the message breaks multiple rules, respond
+with the numbers of the rules that were broken.
+
+The response should be polite and in the following format:
+"This message is against this server's community guidelines, rule #X."
+It shoushould then quote the rule that was broken, prepending the rule
+number with "Rule #" and prepend it with the "> " character.
+
+If there are no rules broken or if your confidence is not over 80%%,
+respond with "OK".
+
+If you are unsure if a rule is broken, respond with "OK".
+
+RULES START
+%s
+RULES END
+
+MESSAGE:
+%s
+`
+)
 
 func main() {
+	// Create new LLM client
+	client := openai.NewClient(os.Getenv("OPENAI_TOKEN"))
+
+	evaluators := map[string]llm.Evaluator{
+		"gpt3p5": llm.NewChatGPT3p5(client),
+		"gpt4":   llm.NewChatGPT4(client),
+	}
+
+	// prefix := fmt.Sprintf("%s\nRULES START\n%s\nRULES END\n", rules, setup)
+
+	service := llm.NewService(
+		"",
+		evaluators,
+	)
+
 	// Create a new Discord session using the provided bot token.
-	dg, err := discordgo.New("Bot " + Token)
+	token := os.Getenv("DISCORD_TOKEN")
+	dg, err := discordgo.New("Bot " + token)
 	if err != nil {
 		fmt.Println("error creating Discord session,", err)
 		return
+	}
+
+	rnrg := regexp.MustCompile(`(\r\n?|\n){2,}`)
+
+	messageCreate := func(s *discordgo.Session, m *discordgo.MessageCreate) {
+		if m.Author.ID == s.State.User.ID {
+			return
+		}
+
+		ctx := context.Background()
+		prompt := fmt.Sprintf(setup, rules, m.Content)
+		res, err := service.Evaluate(ctx, "gpt3p5", prompt)
+		if err != nil {
+			fmt.Println("error evaluating message,", err)
+			return
+		}
+
+		if strings.Trim(res, ". ") == "OK" {
+			color.Green("message '%s' is OK", m.Content)
+			// fmt.Printf("message '%s' is OK\n", m.Content)
+			return
+		} else {
+			color.Red("message '%s' is _NOT_ OK", m.Content)
+			// fmt.Printf("message '%s' is _NOT_ OK\n", m.Content)
+		}
+
+		// remove subsequent lines
+		res = rnrg.ReplaceAllString(res, "\n")
+
+		_, err = s.ChannelMessageSendReply(m.ChannelID, res, m.Reference())
+		if err != nil {
+			fmt.Println("error sending message,", err)
+			return
+		}
 	}
 
 	// Register the messageCreate func as a callback for MessageCreate events.
@@ -49,23 +134,4 @@ func main() {
 
 	// Cleanly close down the Discord session.
 	dg.Close()
-}
-
-// This function will be called (due to AddHandler above) every time a new
-// message is created on any channel that the authenticated bot has access to.
-func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
-	// Ignore all messages created by the bot itself
-	// This isn't required in this specific example but it's a good practice.
-	if m.Author.ID == s.State.User.ID {
-		return
-	}
-	// If the message is "ping" reply with "Pong!"
-	if m.Content == "ping" {
-		s.ChannelMessageSend(m.ChannelID, "Pong!")
-	}
-
-	// If the message is "pong" reply with "Ping!"
-	if m.Content == "pong" {
-		s.ChannelMessageSend(m.ChannelID, "Ping!")
-	}
 }
