@@ -26,6 +26,16 @@ func Test_ChatGPT4(t *testing.T) {
 	prompt := "What is the answer to life, the universe and everything and " +
 		"where is the question from?"
 
+	t.Run("gpt3p5", func(t *testing.T) {
+		resp, err := service.Evaluate(
+			ctx,
+			"gpt3p5",
+			prompt,
+		)
+		require.NoError(t, err)
+		fmt.Println("> gpt3p5:", resp)
+	})
+
 	t.Run("gpt4", func(t *testing.T) {
 		resp, err := service.Evaluate(
 			ctx,
